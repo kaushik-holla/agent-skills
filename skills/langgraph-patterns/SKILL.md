@@ -7,7 +7,7 @@ description: "Canonical LangGraph patterns for typed State, conditional routers,
 
 Canonical, copy-paste recipes for LangGraph >= 1.0 (verified against 1.0.x and 1.1.x). Every snippet here is a *minimal working pattern* you can extend; do not paste them into production verbatim without adapting names and types to the project.
 
-> The snippets use a recurring **example** graph — a research assistant with clarity → research → validator → synthesis nodes — purely to make the patterns concrete. Swap in your own domain. `myapp` is a placeholder for your package name.
+> The snippets use a recurring **example** graph (a research assistant with clarity → research → validator → synthesis nodes) purely to make the patterns concrete. Swap in your own domain. `myapp` is a placeholder for your package name.
 
 ## When To Use
 
@@ -15,7 +15,7 @@ Canonical, copy-paste recipes for LangGraph >= 1.0 (verified against 1.0.x and 1
 - Implementing a node, router, or interrupt (sections 4-8, 11).
 - Wiring tools, MCP servers, or providers (sections 12-13).
 - Adding subgraphs, fan-out parallelism, async streaming, or tracing (sections 14-17).
-- Debugging a graph that "feels off" (section 18 — common mistakes catalog with fixes).
+- Debugging a graph that "feels off" (section 18: common mistakes catalog with fixes).
 - Writing tests against a graph (section 19).
 
 ## 0. Install and Imports
@@ -49,7 +49,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver  # optional
 ```
 
-If an import path is not in the list above, double-check it — internal modules move between minor versions.
+If an import path is not in the list above, double-check it; internal modules move between minor versions.
 
 ## 1. Typed State with `add_messages` Reducer
 
@@ -233,7 +233,7 @@ checkpointer = (
 graph = build_graph(checkpointer=checkpointer)
 ```
 
-Why this matters: `MemorySaver` evaporates between processes — multi-worker setups will lose state across requests.
+Why this matters: `MemorySaver` evaporates between processes; multi-worker setups will lose state across requests.
 
 ## 9. Multi-Turn Conversation with `thread_id`
 
@@ -331,7 +331,7 @@ Why this matters: tests use `MockSearchProvider`; production uses `TavilySearchP
 If using Tavily via an MCP server rather than the SDK, treat it as a privileged tool surface:
 
 ```python
-# Pseudocode — exact API depends on your MCP client library
+# Pseudocode: exact API depends on your MCP client library
 from mcp_client import MCPClient
 
 mcp = MCPClient(

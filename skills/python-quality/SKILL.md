@@ -20,8 +20,8 @@ A consistent, low-friction baseline for new Python projects. Optimised for fast 
 
 Pick one environment manager and stay consistent across the team and CI. Both options below keep the dependency declaration in one place (`pyproject.toml`) and install the project itself in editable mode.
 
-- **uv** — fastest resolver/installer; the modern default for pure-Python and most agentic/LLM projects.
-- **conda + pip** — preferred when you need mixed-binary scientific stacks (CUDA, MKL, GDAL, etc.) or a non-pip-managed interpreter.
+- **uv**: fastest resolver/installer; the modern default for pure-Python and most agentic/LLM projects.
+- **conda + pip**: preferred when you need mixed-binary scientific stacks (CUDA, MKL, GDAL, etc.) or a non-pip-managed interpreter.
 
 ### Option A: uv (recommended default)
 
@@ -78,7 +78,7 @@ dependencies:
       - -e .[dev]
 ```
 
-This installs Python 3.11 from conda-forge and then defers all Python package installs to `pip` against the project's `pyproject.toml`. Reproducible (`conda env create -f environment.yml`) and pip-friendly — every Python dep (including the project itself, in editable mode) lives in one place: `pyproject.toml`.
+This installs Python 3.11 from conda-forge and then defers all Python package installs to `pip` against the project's `pyproject.toml`. Reproducible (`conda env create -f environment.yml`) and pip-friendly. Every Python dep (including the project itself, in editable mode) lives in one place: `pyproject.toml`.
 
 Whichever manager you choose, the `src/<package>/` layout below (section 3) is important for avoiding import shadowing; create the directory tree by hand or with `mkdir -p src/<package> tests`, then ensure `[tool.hatch.build.targets.wheel].packages` in `pyproject.toml` matches.
 
@@ -206,7 +206,7 @@ exclude_lines = [
 
 Why this matters:
 
-- `ruff` covers formatting, linting, isort, security (`S`), bugbear, pyupgrade — one tool, one config, fast.
+- `ruff` covers formatting, linting, isort, security (`S`), bugbear, pyupgrade: one tool, one config, fast.
 - `mypy --strict` on the whole project catches signature drift and silent `Any`. Test files get a lighter regime via the `tool.mypy.overrides` block.
 - `asyncio_mode = "auto"` means you don't have to decorate every async test with `@pytest.mark.asyncio`.
 - Markers `slow`, `live_llm`, `eval` are skipped by default; opt in with `pytest -m live_llm`.
@@ -229,7 +229,7 @@ project_root/
     test_<unit>.py
 ```
 
-Why `src/` and not a flat package at the root: when tests are run, Python's import system can pick up the package from the current directory instead of the installed venv copy — masking missing dependencies, broken `pyproject.toml`, or missing `__init__.py`. The `src/` layout forces tests to import the **installed** package.
+Why `src/` and not a flat package at the root: when tests are run, Python's import system can pick up the package from the current directory instead of the installed venv copy, masking missing dependencies, broken `pyproject.toml`, or missing `__init__.py`. The `src/` layout forces tests to import the **installed** package.
 
 ## 4. `.pre-commit-config.yaml`
 
@@ -308,7 +308,7 @@ class Settings(BaseSettings):
 SETTINGS = Settings()
 ```
 
-Why this matters: a typed `Settings` singleton is the single source of truth — no scattered `os.getenv` calls, no surprises.
+Why this matters: a typed `Settings` singleton is the single source of truth, with no scattered `os.getenv` calls and no surprises.
 
 ## 6. Testing Patterns
 
