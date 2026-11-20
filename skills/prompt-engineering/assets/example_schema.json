@@ -1,0 +1,31 @@
+{
+  "title": "TicketTriage",
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["billing", "bug", "feature_request", "account", "other"]
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "One or two sentences citing the words in the ticket that justify the category."
+    },
+    "urgency": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "description": "high only if the customer is blocked or data is at risk."
+    },
+    "product_area": {
+      "type": ["string", "null"],
+      "description": "Product area if explicitly mentioned, else null."
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "extra": {
+      "type": "object"
+    }
+  },
+  "required": ["category", "reasoning", "urgency"]
+}
