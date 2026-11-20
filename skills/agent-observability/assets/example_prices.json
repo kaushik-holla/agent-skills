@@ -1,0 +1,4 @@
+{
+  "_comment": "Illustrative USD per 1M tokens. Replace with your provider's current price sheet.",
+  "gpt-6-luna": {"input": 0.30, "output": 1.20}
+}
