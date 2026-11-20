@@ -1,55 +1,64 @@
 ---
-name: "langgraph-patterns"
-description: "Canonical LangGraph patterns for typed State, conditional routers, interrupt/resume, checkpointers, structured outputs, tool/MCP wiring, subgraphs, parallel branches, async streaming, and LangSmith tracing. Use when designing or implementing any LangGraph node, router, or graph. Reference; not a runbook."
+name: langgraph-patterns
+description: Canonical LangGraph 1.x patterns for typed State and reducers, conditional routers, bounded loops, interrupt/resume with Command, checkpointers (InMemory, SQLite, Postgres), runtime context for dependency injection, structured outputs, tool and MCP wiring, create_agent with middleware, subgraphs, Send fan-out, v2 streaming, retries, and LangSmith tracing, plus a common-mistakes catalog and testing patterns. Use when designing, implementing, debugging, or upgrading any LangGraph node, router, or graph, or when migrating off deprecated APIs such as create_react_agent. Reference; not a runbook.
+license: MIT
+metadata:
+  author: kaushik-holla
+  version: "2.0"
+  langgraph: ">=1.2,<2"
 ---
 
 # LangGraph Patterns
 
-Canonical, copy-paste recipes for LangGraph >= 1.0 (verified against 1.0.x and 1.1.x). Every snippet here is a *minimal working pattern* you can extend; do not paste them into production verbatim without adapting names and types to the project.
+Canonical, copy-paste recipes for LangGraph >= 1.2 (verified against 1.2.x in November 2026). Every snippet here is a *minimal working pattern* you can extend; do not paste them into production verbatim without adapting names and types to the project.
 
-> The snippets use a recurring **example** graph (a research assistant with clarity → research → validator → synthesis nodes) purely to make the patterns concrete. Swap in your own domain. `myapp` is a placeholder for your package name.
+> The snippets use a recurring **example** graph (a research assistant with clarity -> research -> validator -> synthesis nodes) purely to make the patterns concrete. Swap in your own domain. `myapp` is a placeholder for your package name.
 
 ## When To Use
 
-- Designing a new graph (consult sections 1-7 first).
-- Implementing a node, router, or interrupt (sections 4-8, 11).
-- Wiring tools, MCP servers, or providers (sections 12-13).
-- Adding subgraphs, fan-out parallelism, async streaming, or tracing (sections 14-17).
-- Debugging a graph that "feels off" (section 18: common mistakes catalog with fixes).
-- Writing tests against a graph (section 19).
+- Designing a new graph (consult sections 1-6 first).
+- Implementing a node, router, or interrupt (sections 3-9).
+- Wiring models, tools, providers, or MCP servers (sections 10-13).
+- Adding subgraphs, fan-out parallelism, streaming, retries, or tracing (sections 14-18).
+- Debugging a graph that "feels off": [references/common-mistakes.md](references/common-mistakes.md).
+- Writing tests against a graph: [references/testing.md](references/testing.md).
 
 ## 0. Install and Imports
 
-Pin minimum versions in `pyproject.toml`:
+Pin minimum versions in `pyproject.toml` (see the `python-quality` skill for the full template):
 
 ```toml
 [project]
 dependencies = [
-  "langgraph>=1.0,<2",
-  "langchain-core>=0.3",
-  "langchain-openai>=0.2",
-  "pydantic>=2.7",
+  "langgraph>=1.2,<2",
+  "langchain>=1.4,<2",          # init_chat_model, create_agent, langchain.mcp
+  "langchain-openai>=1.0,<2",   # or langchain-anthropic, langchain-google-genai, ...
+  "pydantic>=2.11",
 ]
 
 [project.optional-dependencies]
-sqlite = ["langgraph-checkpoint-sqlite>=2.0"]  # only if you persist via SqliteSaver
+sqlite = ["langgraph-checkpoint-sqlite>=2.0"]      # only if you persist via SqliteSaver
+postgres = ["langgraph-checkpoint-postgres>=2.0"]  # production persistence
 ```
 
 Imports cheat-sheet (all from the **public** API):
 
 ```python
-from typing import Annotated, Literal, TypedDict, Any
+from typing import Annotated, Any, Literal, TypedDict
+import operator
+
 from pydantic import BaseModel, Field
-from langchain_core.messages import AnyMessage, HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, START, END
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.types import Command, interrupt
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.sqlite import SqliteSaver  # optional
+from langgraph.types import Command, RetryPolicy, Send, interrupt
+from langgraph.runtime import Runtime
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver  # optional extra
 ```
 
-If an import path is not in the list above, double-check it; internal modules move between minor versions.
+If an import path is not in the list above, double-check it; internal modules move between minor versions. `MemorySaver` still works as an alias, but `InMemorySaver` is the current name.
 
 ## 1. Typed State with `add_messages` Reducer
 
@@ -69,11 +78,9 @@ Why this matters: without the reducer, the conversation forgets itself after eve
 
 ## 2. Pydantic State Variant
 
-Use Pydantic State when you want validation on every update (catches mistyped fields early, at runtime, not silently). Slightly more boilerplate but excellent for catch-typos-fast.
+Use Pydantic State when you want validation on every update (catches mistyped fields early, at runtime, not silently). Slightly more boilerplate but excellent for catch-typos-fast. With `version="v2"` (section 7), outputs are coerced back to your model type.
 
 ```python
-from pydantic import BaseModel, Field
-
 class State(BaseModel):
     messages: Annotated[list[AnyMessage], add_messages] = Field(default_factory=list)
     clarity_status: Literal["clear", "needs_clarification"] = "needs_clarification"
@@ -90,7 +97,7 @@ Why this matters: an unknown field name (typo) raises immediately; TypedDict acc
 A node is a function (sync or async) of `State -> dict` returning only the **fields it changed**. Returning the whole state can cause reducers to re-apply.
 
 ```python
-def clarity_node(state: State) -> dict:
+def clarity_node(state: State) -> dict[str, Any]:
     last = state["messages"][-1]
     is_clear = "company" in last.content.lower()  # placeholder logic
     return {
@@ -107,25 +114,31 @@ Bind state, add nodes, wire edges, compile **once** at module scope. Per-request
 
 ```python
 def build_graph(checkpointer=None):
-    g = StateGraph(State)
+    g = StateGraph(State, context_schema=Context)  # Context: see section 11
     g.add_node("clarity", clarity_node)
-    g.add_node("research", research_node)
+    g.add_node("research", research_node, retry_policy=RetryPolicy(max_attempts=3))
     g.add_node("validator", validator_node)
     g.add_node("synthesis", synthesis_node)
 
     g.add_edge(START, "clarity")
-    g.add_conditional_edges("clarity", route_after_clarity,
-                            {"research": "research", "interrupt": "clarity"})
-    g.add_conditional_edges("research", route_after_research,
-                            {"validator": "validator", "synthesis": "synthesis"})
-    g.add_conditional_edges("validator", route_after_validator,
-                            {"research": "research", "synthesis": "synthesis"})
+    g.add_conditional_edges(
+        "clarity", route_after_clarity, {"research": "research", "interrupt": "clarity"}
+    )
+    g.add_conditional_edges(
+        "research", route_after_research, {"validator": "validator", "synthesis": "synthesis"}
+    )
+    g.add_conditional_edges(
+        "validator", route_after_validator, {"research": "research", "synthesis": "synthesis"}
+    )
     g.add_edge("synthesis", END)
 
-    return g.compile(checkpointer=checkpointer or MemorySaver())
+    return g.compile(checkpointer=checkpointer or InMemorySaver())
+
 
 GRAPH = build_graph()  # compiled once at import
 ```
+
+Set the recursion limit explicitly at invoke time for graphs with loops (`config={"recursion_limit": 25, ...}`); the default changed in 1.0.x and is a safety net, not a design.
 
 Why this matters: compile is non-trivial; doing it per-request adds latency and risks divergent graph instances.
 
@@ -137,25 +150,24 @@ Router signature uses `Literal[...]` of exact node names. Mismatches between rou
 def route_after_clarity(state: State) -> Literal["research", "interrupt"]:
     return "research" if state["clarity_status"] == "clear" else "interrupt"
 
+
 def route_after_research(state: State) -> Literal["validator", "synthesis"]:
     return "synthesis" if state["confidence_score"] >= 6 else "validator"
-
-def route_after_validator(state: State) -> Literal["research", "synthesis"]:
-    if state["validation_result"] == "sufficient" or state["attempts"] >= 3:
-        return "synthesis"
-    return "research"
 ```
 
-Why this matters: `Literal[...]` makes mypy verify the router only returns valid keys.
+Why this matters: `Literal[...]` makes mypy verify the router only returns valid keys. (`route_after_validator` is in section 6.)
 
 ## 6. Bounded-Loop Pattern (Validator -> Research)
 
 The attempt counter lives in `State`. Increment in the **worker** node (here, `research_node`), check in the **router**. Doing it the other way around is the #1 reason loops don't terminate.
 
 ```python
-def research_node(state: State) -> dict:
+MAX_ATTEMPTS = 3
+
+
+def research_node(state: State, runtime: Runtime[Context]) -> dict[str, Any]:
     attempts = state.get("attempts", 0) + 1
-    findings = run_research(state["messages"])
+    findings = runtime.context.search.search(state["messages"][-1].content)
     return {
         "attempts": attempts,
         "research_findings": findings,
@@ -163,11 +175,12 @@ def research_node(state: State) -> dict:
         "messages": [AIMessage(content=f"Research attempt {attempts} complete.")],
     }
 
+
 def route_after_validator(state: State) -> Literal["research", "synthesis"]:
     if state["validation_result"] == "sufficient":
         return "synthesis"
-    if state["attempts"] >= 3:
-        return "synthesis"
+    if state["attempts"] >= MAX_ATTEMPTS:
+        return "synthesis"  # give the user *some* answer, flagged as low-confidence
     return "research"
 ```
 
@@ -178,15 +191,15 @@ Why this matters: state mutations from router functions are discarded by LangGra
 `interrupt()` pauses the graph and surfaces a payload to the caller. The caller collects human input out-of-band and resumes with `Command(resume=<value>)`.
 
 ```python
-from langgraph.types import interrupt, Command
-
-def clarity_node(state: State) -> dict:
+def clarity_node(state: State) -> dict[str, Any]:
     last = state["messages"][-1].content
     if not contains_company_name(last):
-        clarification = interrupt({
-            "question": "Which company are you asking about?",
-            "context": last,
-        })
+        clarification = interrupt(
+            {
+                "question": "Which company are you asking about?",
+                "context": last,
+            }
+        )
         # On resume, `clarification` holds the value passed to Command(resume=...)
         return {
             "messages": [HumanMessage(content=clarification)],
@@ -195,14 +208,21 @@ def clarity_node(state: State) -> dict:
     return {"clarity_status": "clear"}
 ```
 
-Invoking and resuming:
+Invoking and resuming with the typed v2 output format (LangGraph >= 1.1):
 
 ```python
-config = {"configurable": {"thread_id": "session-42"}}
-result = GRAPH.invoke({"messages": [HumanMessage(content="Tell me about stocks")]}, config)
-# result will contain an `__interrupt__` payload; the caller sees the question.
-# After collecting human input:
-final = GRAPH.invoke(Command(resume="Apple Inc."), config)
+config = {"configurable": {"thread_id": "session-42"}, "recursion_limit": 25}
+result = GRAPH.invoke(
+    {"messages": [HumanMessage(content="Tell me about stocks")]},
+    config,
+    context=CONTEXT,
+    version="v2",
+)
+if result.interrupts:  # tuple[Interrupt, ...], empty if none
+    question = result.interrupts[0].value["question"]
+    # ...collect the human's answer, then:
+    final = GRAPH.invoke(Command(resume="Acme Corp"), config, context=CONTEXT, version="v2")
+    print(final.value["clarity_status"])  # .value is your state (dict / model / dataclass)
 ```
 
 Caveats:
@@ -210,30 +230,40 @@ Caveats:
 - The node that called `interrupt()` re-executes from its start on resume. Any side effect before the `interrupt()` call runs twice. Move side effects after, or guard with a state flag.
 - `thread_id` must match between the original invoke and the resume invoke.
 - `interrupt()` requires a checkpointer to be attached to the compiled graph.
+- Without `version="v2"`, `invoke` returns a plain dict with interrupts under `"__interrupt__"`. Dict-style access on a v2 `GraphOutput` (`result["__interrupt__"]`) works but is deprecated and will be removed in v3; use `.value` / `.interrupts`.
 
-## 8. Checkpointers: `MemorySaver` vs `SqliteSaver`
+## 8. Checkpointers: InMemory vs SQLite vs Postgres
 
-> Packaging note: as of LangGraph 0.2 (and unchanged in 1.x), `SqliteSaver` lives in a separate package. Install with `pip install langgraph-checkpoint-sqlite`, or `pip install -e ".[sqlite]"` if you wired the extra in your pyproject. `MemorySaver` ships with the base `langgraph` package and needs no extra install.
+> Packaging note: `SqliteSaver` and `PostgresSaver` live in separate packages (`langgraph-checkpoint-sqlite`, `langgraph-checkpoint-postgres`). `InMemorySaver` ships with the base `langgraph` package. Keep checkpoint packages current: a 2026 advisory fixed unsafe msgpack deserialization in checkpoint loading. Never point a checkpointer at a database an untrusted party can write to.
 
 | Use case | Checkpointer |
 | --- | --- |
-| Unit tests, demos, single-process dev | `MemorySaver()` |
-| Local CLI with persistence across restarts | `SqliteSaver.from_conn_string("./checkpoints.sqlite")` |
-| Multi-process / production | A real backend (Postgres, Redis); use `AsyncPostgresSaver` from `langgraph.checkpoint.postgres` |
+| Unit tests, demos, single-process dev | `InMemorySaver()` |
+| Local CLI with persistence across restarts | `SqliteSaver(sqlite3.connect(path, check_same_thread=False))` |
+| Multi-process / production | `PostgresSaver` / `AsyncPostgresSaver` (`langgraph.checkpoint.postgres[.aio]`) |
 
 ```python
-from langgraph.checkpoint.memory import MemorySaver
+import sqlite3
+
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-checkpointer = (
-    SqliteSaver.from_conn_string("./checkpoints.sqlite")
-    if PERSIST_TO_DISK
-    else MemorySaver()
-)
-graph = build_graph(checkpointer=checkpointer)
+
+def make_checkpointer(settings: Settings):
+    if settings.persist_checkpoints:
+        conn = sqlite3.connect(settings.checkpoint_db_path, check_same_thread=False)
+        return SqliteSaver(conn)
+    return InMemorySaver()
+
+
+graph = build_graph(checkpointer=make_checkpointer(SETTINGS))
 ```
 
-Why this matters: `MemorySaver` evaporates between processes; multi-worker setups will lose state across requests.
+`SqliteSaver.from_conn_string(...)` and `PostgresSaver.from_conn_string(...)` are **context managers**: use them as `with PostgresSaver.from_conn_string(DB_URI) as cp: cp.setup(); ...`. Assigning the call result directly to a variable is a common bug. Call `.setup()` once per database to create tables.
+
+For memory that spans threads (user preferences, learned facts), pass a `store=` (for example `InMemoryStore`, or the Postgres store) to `compile()`; checkpointers are per-thread only.
+
+Why this matters: `InMemorySaver` evaporates between processes; multi-worker setups will lose state across requests.
 
 ## 9. Multi-Turn Conversation with `thread_id`
 
@@ -242,380 +272,235 @@ Each conversation is a `thread_id`. Reusing the same thread_id replays the conve
 ```python
 def chat_turn(graph, user_text: str, thread_id: str):
     config = {"configurable": {"thread_id": thread_id}}
-    return graph.invoke({"messages": [HumanMessage(content=user_text)]}, config)
+    return graph.invoke(
+        {"messages": [HumanMessage(content=user_text)]}, config, context=CONTEXT, version="v2"
+    ).value
 
-reply1 = chat_turn(GRAPH, "What's Apple's recent news?", "user-123")
+
+reply1 = chat_turn(GRAPH, "What's Acme's recent news?", "user-123")
 reply2 = chat_turn(GRAPH, "And their competitors?", "user-123")  # has context
-reply3 = chat_turn(GRAPH, "Tell me about the CEO", "user-123")
 ```
 
 Why this matters: random per-call thread IDs lose context; deterministic per-user/session IDs preserve it.
 
 ### History Pruning
 
-Long conversations exceed the model's context window. Prune in a "pruner" node or before invoking:
+Long conversations exceed the model's context window (and cost scales with every turn). Trim before the model call with the built-in helper rather than hand-rolled slicing:
 
 ```python
-def prune_messages(messages: list[AnyMessage], keep_last: int = 20) -> list[AnyMessage]:
-    if len(messages) <= keep_last:
-        return messages
-    # Preserve the first system message if present, then the most recent `keep_last - 1`.
-    head = messages[:1] if messages and messages[0].type == "system" else []
-    tail = messages[-(keep_last - len(head)):]
-    return head + tail
+from langchain_core.messages import trim_messages
+from langchain_core.messages.utils import count_tokens_approximately
+
+
+def call_model(state: State) -> dict[str, Any]:
+    window = trim_messages(
+        state["messages"],
+        strategy="last",
+        max_tokens=8_000,
+        token_counter=count_tokens_approximately,
+        include_system=True,
+        start_on="human",
+    )
+    return {"messages": [llm.invoke(window)]}
 ```
+
+This trims what the model *sees* while the checkpoint keeps full history. To actually delete history from state, return `RemoveMessage(id=...)` entries for the `add_messages` reducer.
 
 ## 10. Structured Output with `with_structured_output`
 
-For any LLM response a router will consume, use a Pydantic schema. Free-form text + regex is the #1 source of intermittent routing bugs.
+For any LLM response a router will consume, use a Pydantic schema. Free-form text + regex is the #1 source of intermittent routing bugs. See the `prompt-engineering` skill for schema design rules.
 
 ```python
+from langchain_core.exceptions import OutputParserException
+from pydantic import ValidationError
+
+
 class ClarityDecision(BaseModel):
     status: Literal["clear", "needs_clarification"]
     reason: str = Field(..., description="One sentence justification.")
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+llm = init_chat_model(SETTINGS.llm_model, temperature=0)  # e.g. "openai:gpt-6-luna"
 clarity_model = llm.with_structured_output(ClarityDecision)
 
-def clarity_node(state: State) -> dict:
+
+def clarity_node(state: State) -> dict[str, Any]:
     try:
         decision: ClarityDecision = clarity_model.invoke(state["messages"])
-    except Exception:
+    except (OutputParserException, ValidationError):
         # Parse-failure fallback: bias toward asking, never crash the graph
         return {"clarity_status": "needs_clarification"}
     return {"clarity_status": decision.status}
 ```
 
-Why this matters: structured output makes routing deterministic and testable; you can mock the model to return a known Pydantic instance.
+Why this matters: structured output makes routing deterministic and testable; you can mock the model to return a known Pydantic instance. `init_chat_model` keeps the provider and model ID in config, so swapping vendors is a settings change.
 
-## 11. Tool Layer: Provider Interface (Mock + Tavily)
+## 11. Tool Layer: Provider Interface + Runtime Context
 
-Define an interface so swapping providers (mock for tests, Tavily for real) is one line.
+Define an interface so swapping providers (mock for tests, Tavily for real) is one line, and inject it through **runtime context**, not state (clients are not serializable and must not be checkpointed).
 
 ```python
+from dataclasses import dataclass
 from typing import Protocol
+
 
 class SearchProvider(Protocol):
     def search(self, query: str) -> dict[str, Any]: ...
 
+
 class MockSearchProvider:
-    def __init__(self, data: dict[str, dict]):
+    def __init__(self, data: dict[str, dict[str, Any]]):
         self._data = data
+
     def search(self, query: str) -> dict[str, Any]:
         for name, blob in self._data.items():
             if name.lower() in query.lower():
                 return {"source": "mock", "company": name, **blob}
         return {"source": "mock", "company": None, "note": "no match"}
 
+
 class TavilySearchProvider:
     def __init__(self, api_key: str):
         from tavily import TavilyClient
+
         self._client = TavilyClient(api_key=api_key)
+
     def search(self, query: str) -> dict[str, Any]:
         resp = self._client.search(query=query, max_results=5)
         return {"source": "tavily", "results": resp.get("results", [])}
+
+
+@dataclass(frozen=True)
+class Context:
+    search: SearchProvider
+    user_id: str
+
+
+CONTEXT = Context(search=MockSearchProvider(MOCK_DATA), user_id="demo")
 ```
 
-Wire into the node:
+Nodes declare `runtime: Runtime[Context]` (section 6) and the graph is built with `StateGraph(State, context_schema=Context)`. Callers pass `context=` to `invoke` / `stream`.
+
+Why this matters: tests pass a `MockSearchProvider`; production passes `TavilySearchProvider`. The graph code is identical, and nothing unserializable ends up in a checkpoint.
+
+## 12. MCP Server Wiring
+
+MCP support ships in LangChain as `langchain.mcp` (beta; `pip install "langchain[mcp]>=1.4"`; it replaces the standalone `langchain-mcp-adapters` package and its `MultiServerMCPClient`). Treat every MCP server as a privileged tool surface:
 
 ```python
-def research_node(state: State, provider: SearchProvider) -> dict:
-    findings = provider.search(state["messages"][-1].content)
-    return {"research_findings": findings, "attempts": state.get("attempts", 0) + 1}
+from langchain.mcp import MCPAdapter
+
+ALLOWED_TOOLS = {"search"}  # minimum-necessary
+
+
+async def load_research_tools(mcp_url: str):
+    async with MCPAdapter(mcp_url) as adapter:  # str must be an http(s) URL
+        return [t for t in await adapter.list_tools() if t.name in ALLOWED_TOOLS]
 ```
 
-Why this matters: tests use `MockSearchProvider`; production uses `TavilySearchProvider`. The graph code is identical.
+Bind the filtered tools to your model (`llm.bind_tools(tools)`) or pass them to `create_agent` (section 13).
 
-## 12. MCP Server Wiring (Tavily MCP)
+Security: pin the server origin and version; allowlist tools by name (as above); treat all tool output as untrusted data (indirect prompt injection), never as instructions; re-review tool descriptions when a server updates (tool poisoning); log tool calls with structured fields, not full payloads. Building or auditing a server: see the `mcp-server-builder` skill.
 
-If using Tavily via an MCP server rather than the SDK, treat it as a privileged tool surface:
+## 13. When Not to Hand-Roll: `create_agent`
+
+For a standard tool-calling loop, use LangChain's `create_agent` (it runs on LangGraph). It replaces the deprecated `langgraph.prebuilt.create_react_agent`; `prompt=` became `system_prompt=`, and pre/post model hooks became middleware.
 
 ```python
-# Pseudocode: exact API depends on your MCP client library
-from mcp_client import MCPClient
+from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 
-mcp = MCPClient(
-    server="tavily",
-    url="https://mcp.tavily.com",
-    api_key=os.environ["TAVILY_API_KEY"],
-    allowed_tools=["search"],  # minimum-necessary
+agent = create_agent(
+    model=SETTINGS.llm_model,
+    tools=[search_web, send_report],
+    system_prompt="You are a careful research assistant. Cite sources.",
+    response_format=ResearchSummary,  # Pydantic model -> result["structured_response"]
+    middleware=[HumanInTheLoopMiddleware(interrupt_on={"send_report": True})],
+    checkpointer=InMemorySaver(),
 )
-
-def research_node(state: State) -> dict:
-    raw = mcp.call("search", {"query": state["messages"][-1].content})
-    # Treat raw output as untrusted; do not interpolate raw text into prompt
-    # instruction sections. Quote it as data.
-    return {"research_findings": sanitize(raw)}
 ```
 
-Security checklist for MCP:
+Hand-roll a `StateGraph` (sections 1-9) when you need custom topology: validator loops, explicit clarity gates, parallel research, or subgraphs. A compiled `create_agent` graph can itself be added as a node in a larger graph.
 
-- Pin the server origin and version; do not auto-update.
-- Scope tools to the minimum needed (`allowed_tools=[...]`).
-- Treat all output as untrusted (indirect prompt-injection risk).
-- Log tool calls with structured fields, no full payloads.
+## 14. Subgraphs
 
-## 13. Subgraphs
+Extract a sub-pipeline into a subgraph when it has its own bounded loop, is reused across graphs, or would make the parent state unwieldy. If parent and subgraph share state keys, add the compiled subgraph directly as a node (`g.add_node("research", RESEARCH_SUB)`); otherwise invoke it from a wrapper node that maps state in and out. Full recipe: [references/advanced-patterns.md](references/advanced-patterns.md#subgraphs).
 
-Extract a self-contained sub-pipeline into a subgraph when:
+## 15. Parallel Branches (Fan-Out / Fan-In)
 
-- It has its own bounded loop (e.g., a multi-attempt scraper).
-- It's reusable across graphs.
-- The parent state would otherwise become unwieldy.
-
-```python
-def build_research_subgraph():
-    class SubState(TypedDict):
-        query: str
-        attempts: int
-        result: dict
-    g = StateGraph(SubState)
-    g.add_node("search", lambda s: {"result": MOCK_DATA.get(s["query"], {})})
-    g.add_edge(START, "search")
-    g.add_edge("search", END)
-    return g.compile()
-
-RESEARCH_SUB = build_research_subgraph()
-
-def research_node(state: State) -> dict:
-    sub_result = RESEARCH_SUB.invoke({"query": state["messages"][-1].content, "attempts": 0, "result": {}})
-    return {"research_findings": sub_result["result"]}
-```
-
-## 14. Parallel Branches (Fan-Out / Fan-In)
-
-LangGraph runs nodes in parallel automatically when an edge fans out. Use a reducer on the merging field.
+LangGraph runs nodes in parallel when an edge fans out. Any field that more than one parallel node writes **must** have a reducer.
 
 ```python
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    news: list[dict]      # reducer below
-    financials: list[dict]
+    news: Annotated[list[dict[str, Any]], operator.add]  # merged across branches
+    financials: Annotated[list[dict[str, Any]], operator.add]
 
-def news_node(state: State) -> dict:
-    return {"news": [fetch_news(state["messages"][-1].content)]}
-
-def financials_node(state: State) -> dict:
-    return {"financials": [fetch_financials(state["messages"][-1].content)]}
 
 g.add_edge("dispatch", "news")
 g.add_edge("dispatch", "financials")
-g.add_edge("news", "merge")
-g.add_edge("financials", "merge")
+g.add_edge(["news", "financials"], "merge")  # waits for both branches
 ```
 
-If both nodes write to the same field, declare a reducer (e.g., `operator.add` for lists). Without a reducer, the later writer wins and you lose data.
+Without a reducer, two branches writing the same key in one step raise `InvalidUpdateError` ("Can receive only one value per step").
 
-## 15. Async and Streaming
-
-For streaming the model's tokens back to the user as they're generated:
+For a dynamic number of branches (map-reduce), return `Send` objects from a router:
 
 ```python
-async def run_streaming(graph, user_text: str, thread_id: str):
-    config = {"configurable": {"thread_id": thread_id}}
-    async for event in graph.astream_events(
-        {"messages": [HumanMessage(content=user_text)]},
-        config=config,
-        version="v2",
-    ):
-        if event["event"] == "on_chat_model_stream":
-            yield event["data"]["chunk"].content
+def fan_out(state: State) -> list[Send]:
+    return [Send("research_one", {"query": q}) for q in state["subqueries"]]
+
+
+g.add_conditional_edges("planner", fan_out, ["research_one"])
+g.add_edge("research_one", "merge")
 ```
 
-Notes:
+## 16. Async and Streaming
 
-- `astream` yields state updates; `astream_events` yields fine-grained events including token deltas.
-- Mix async nodes with sync nodes is supported but adds friction; prefer all-async for clarity.
-- Cancellation: wrapping the async iteration in `asyncio.TaskGroup` and cancelling cleanly leaves the checkpointer consistent.
-- LangGraph 1.1 added an opt-in `version="v2"` streaming format that returns a typed `GraphOutput` (`.value` for state, `.interrupts` for paused interrupts). v1 remains the default and is backward-compatible; this skill's snippets use v1.
+Stream tokens with `graph.astream(..., stream_mode="messages", version="v2")`. Every v2 part is a dict with `type`, `ns`, and `data`; for `"messages"`, `data` is `(chunk, metadata)`. Use `"updates"` for per-node progress, `"values"` for full state, and `"custom"` for anything a node writes via `get_stream_writer()`. Prefer all-async nodes when streaming. Full recipe and notes: [references/advanced-patterns.md](references/advanced-patterns.md#async-and-streaming).
 
-## 16. LangSmith Tracing
+## 17. Retries and Failure Handling
 
-Env-var-gated, off by default in CI:
+Attach `retry_policy=RetryPolicy(max_attempts=3)` to nodes that call flaky I/O (section 4); retries apply per node, so keep side effects idempotent. Catch and convert expected failures inside the node (return a state flag the router can read); let unexpected ones raise so the checkpoint marks the step failed and the run can be resumed. Keep the **business** retry loop (validator -> research, section 6) separate from **transport** retries (RetryPolicy): they solve different problems and should not share a counter.
 
-```bash
-# .env
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=<your-key>
-LANGCHAIN_PROJECT=myapp
-```
+## 18. LangSmith Tracing
 
-Tag runs at invoke time:
+Env-var-gated, off by default in CI: set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, and `LANGSMITH_PROJECT=myapp-dev` (`{service}-{env}`) in `.env`. The `LANGSMITH_*` names replaced the legacy `LANGCHAIN_*` ones. Tag runs at invoke time:
 
 ```python
 config = {
     "configurable": {"thread_id": thread_id},
     "tags": ["myapp", "demo"],
-    "metadata": {"user_id": user_id, "model": "gpt-4o-mini"},
+    "metadata": {"user_id": hashed_user_id, "model": SETTINGS.llm_model, "prompt_version": "v3"},
     "run_name": f"chat-{thread_id}",
 }
-result = graph.invoke(input_state, config)
+result = graph.invoke(input_state, config, context=CONTEXT, version="v2")
 ```
 
-Why this matters: tagged runs are searchable in the LangSmith UI; per-run metadata makes debugging tractable.
+Why this matters: tagged runs are searchable in the LangSmith UI; per-run metadata makes debugging tractable. For vendor-neutral OpenTelemetry tracing, cost accounting, and trace-driven debugging, see the `agent-observability` skill.
 
-## 17. Common Mistakes (with fix code)
+## 19. Common Mistakes and Testing
 
-### 17.1 Messages overwritten because reducer is missing
+The full catalog with broken/fixed code lives in [references/common-mistakes.md](references/common-mistakes.md); testing patterns (mocking the provider, replaying threads, interrupt round-trips, markers) are in [references/testing.md](references/testing.md). The short list:
 
-Broken:
-
-```python
-class State(TypedDict):
-    messages: list[AnyMessage]  # no reducer!
-```
-
-Fixed:
-
-```python
-class State(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
-```
-
-### 17.2 Counter incremented in the router (never advances)
-
-Broken:
-
-```python
-def route_after_validator(state: State) -> Literal[...]:
-    state["attempts"] += 1   # discarded; LangGraph ignores router-side state mutations
-    if state["attempts"] >= 3: return "synthesis"
-    return "research"
-```
-
-Fixed: increment in the worker node and return it; let the router read it.
-
-```python
-def research_node(state: State) -> dict:
-    return {"attempts": state.get("attempts", 0) + 1, ...}
-```
-
-### 17.3 Side effect replays on resume
-
-Broken:
-
-```python
-def clarity_node(state: State) -> dict:
-    db.save_event("clarity_entered")        # runs again on resume
-    clarification = interrupt({"question": "..."})
-    return {...}
-```
-
-Fixed: guard with a state flag, or perform side effects only after the interrupt.
-
-```python
-def clarity_node(state: State) -> dict:
-    clarification = interrupt({"question": "..."})
-    db.save_event("clarification_received")  # runs once
-    return {...}
-```
-
-### 17.4 Routing returns a literal that isn't a node name
-
-Broken:
-
-```python
-def route_after_clarity(state) -> Literal["research", "interrupt"]:
-    return "synthesise"   # typo; not in path_map
-```
-
-Fixed: define `Literal[...]` with the exact strings, let mypy catch typos.
-
-```python
-def route_after_clarity(state) -> Literal["research", "interrupt"]:
-    return "research" if state["clarity_status"] == "clear" else "interrupt"
-```
-
-### 17.5 Per-request compile
-
-Broken:
-
-```python
-def handle(request):
-    graph = build_graph()         # expensive, every request
-    return graph.invoke(...)
-```
-
-Fixed: compile once.
-
-```python
-GRAPH = build_graph()
-def handle(request):
-    return GRAPH.invoke(...)
-```
-
-## 18. Testing Patterns
-
-### 18.1 Mock the LLM at the boundary
-
-Mock `ChatOpenAI` (the provider client), not your own node functions. Tests stay decoupled from your code.
-
-```python
-from unittest.mock import MagicMock
-
-def make_fake_clarity_model(decision: ClarityDecision):
-    m = MagicMock()
-    m.invoke.return_value = decision
-    return m
-
-def test_clarity_node_routes_to_research_when_clear(monkeypatch):
-    fake = make_fake_clarity_model(ClarityDecision(status="clear", reason="..."))
-    monkeypatch.setattr("myapp.agents.clarity.clarity_model", fake)
-    out = clarity_node({"messages": [HumanMessage(content="Tell me about Apple")]})
-    assert out["clarity_status"] == "clear"
-```
-
-### 18.2 Replay a checkpointed thread
-
-For multi-turn tests, exercise the same thread_id twice:
-
-```python
-def test_followup_question_uses_previous_context():
-    g = build_graph()
-    cfg = {"configurable": {"thread_id": "test-1"}}
-    g.invoke({"messages": [HumanMessage("Apple recent news?")]}, cfg)
-    out = g.invoke({"messages": [HumanMessage("What about competitors?")]}, cfg)
-    # Assert the latest agent response references prior context
-    assert "Apple" in out["messages"][-1].content or len(out["messages"]) > 2
-```
-
-### 18.3 Test interrupt + resume
-
-```python
-def test_interrupt_resume_round_trip():
-    g = build_graph()
-    cfg = {"configurable": {"thread_id": "test-2"}}
-    out = g.invoke({"messages": [HumanMessage("Tell me about stocks")]}, cfg)
-    assert "__interrupt__" in out  # graph paused
-    final = g.invoke(Command(resume="Apple Inc."), cfg)
-    assert final["clarity_status"] == "clear"
-```
-
-### 18.4 Determinism
-
-- Pin LLM `temperature=0` for tests that compare structured fields.
-- For tests asserting text content, mock the LLM. Don't depend on real model output.
-- Fix seeds for any RNG in your own code (`random`, `numpy.random`).
-
-### 18.5 Markers
-
-Use pytest markers to separate fast/deterministic tests from slow/live ones:
-
-```python
-@pytest.mark.live_llm
-def test_real_research_returns_a_finding():
-    ...
-
-@pytest.mark.eval
-def test_synthesis_quality_meets_rubric():
-    ...
-```
-
-Default `pytest` skips these unless `-m live_llm` or `-m eval` is passed.
+1. Messages overwritten because the `add_messages` reducer is missing.
+2. Counter incremented in the router (never advances).
+3. Side effect before `interrupt()` replays on resume.
+4. Router returns a literal that isn't a node name.
+5. Per-request compile.
+6. Parallel branches writing one key without a reducer (`InvalidUpdateError`).
+7. `from_conn_string(...)` checkpointer used without `with`.
+8. Clients or other unserializable objects stored in state instead of runtime context.
+9. Still importing `create_react_agent` from `langgraph.prebuilt`.
+10. Reading `result["__interrupt__"]` from a v2 `GraphOutput`.
 
 ## References
 
-- LangGraph docs: <https://langchain-ai.github.io/langgraph/>
-- LangChain core: <https://python.langchain.com/docs/concepts/>
+- LangGraph docs: <https://docs.langchain.com/oss/python/langgraph/overview>
+- LangGraph v1 migration guide: <https://docs.langchain.com/oss/python/migrate/langgraph-v1>
+- LangChain v1 migration guide: <https://docs.langchain.com/oss/python/migrate/langchain-v1>
+- Streaming (v2 format): <https://docs.langchain.com/oss/python/langgraph/streaming>
+- MCP in LangChain: <https://docs.langchain.com/oss/python/langchain/mcp>
+- LangGraph releases: <https://github.com/langchain-ai/langgraph/releases>
 - Pydantic v2: <https://docs.pydantic.dev/latest/>
-- Pin `langgraph` minor version in `pyproject.toml`; release cadence is fast and import paths occasionally move.
+- Pin `langgraph` minor version in `pyproject.toml` and commit the lockfile; release cadence is fast (roughly every two weeks) and import paths occasionally move.
