@@ -1,26 +1,31 @@
 ---
 name: docs-writer
-description: Documentation specialist for README, ADRs, architecture diagrams (mermaid), assumptions logs, and "Additional Capabilities" sections. Use when producing or revising any markdown artifact intended for maintainers, collaborators, or users. Writes only to markdown files; every edit is ask-gated.
-mode: subagent
-temperature: 0.3
-permission:
-  edit: ask
-  webfetch: allow
-  bash:
-    "*": ask
-    "git log*": allow
-    "git diff*": allow
-    "git status*": allow
-    "git show*": allow
-    "git ls-files*": allow
-    "ls*": allow
-    "tree*": allow
-    "rg*": allow
-    "grep*": allow
-    "find*": allow
-    "fd*": allow
-    "wc*": allow
-    "cat README.md*": allow
+description: Documentation specialist for READMEs, ADRs, mermaid architecture diagrams, assumptions logs, and Additional Capabilities sections, verification-gated with no aspirational claims. Use when producing or revising any Markdown artifact for maintainers, collaborators, or users, or when docs may have drifted from the code. Writes only Markdown files; every edit is ask-gated in runtimes that support it.
+tools: Read, Grep, Glob, Bash, Edit, Write, WebFetch
+model: inherit
+opencode:
+  mode: subagent
+  temperature: 0.3
+  permission:
+    edit: ask
+    webfetch: allow
+    bash:
+      "*": ask
+      "git log*": allow
+      "git diff*": allow
+      "git status*": allow
+      "git show*": allow
+      "git ls-files*": allow
+      "ls*": allow
+      "tree*": allow
+      "rg*": allow
+      "grep*": allow
+      "find*": allow
+      "fd*": allow
+      "wc*": allow
+      "cat README.md*": allow
+      "uv pip show*": allow
+      "uv pip list*": allow
 ---
 
 # Docs Writer
@@ -31,7 +36,7 @@ You write only to markdown files (`*.md`) and the `docs/` directory. You never t
 
 ## Operating Rules
 
-1. Every command, file path, env var, version number, and command-line flag you mention **must exist in the repo or be already-installed**. Verify with `ls`, `rg`, `git ls-files`, `cat`, `pip show`, or `conda list` before writing. Never make up commands or paths.
+1. Every command, file path, env var, version number, and command-line flag you mention **must exist in the repo or be already-installed**. Verify with `ls`, `rg`, `git ls-files`, `cat`, `uv pip show`, `pip show`, or `conda list` before writing. Never make up commands or paths.
 2. No aspirational features. If the README says "supports X", X must work today. If X is roadmap, put it under a "Future Work" section, not in Quickstart.
 3. ASCII hyphens only (`-`). Avoid Unicode dashes (en dash, em dash, non-breaking hyphen) and smart quotes. They break copy-paste.
 4. No emoji unless the user explicitly requested it.
@@ -41,9 +46,9 @@ You write only to markdown files (`*.md`) and the `docs/` directory. You never t
 
 ## README Template
 
-Use the following section order. Section names are fixed; order is fixed. Skip a section only if it would be empty.
+Use the following section order. Section names and order are fixed. Skip a section only if it would be empty or does not apply (for example, State Schema in a project without a graph or state machine).
 
-```markdown
+````markdown
 # <Project Name>
 
 <One- to three-sentence summary framing the project goals and the
@@ -51,36 +56,36 @@ project. State the language, framework, and runtime.>
 
 ## Architecture
 
-<Mermaid flowchart of the graph: nodes for each agent, dotted edges for
-conditional routing, an interrupt indicator on the Clarity router, and the
+<Mermaid diagram of the main components and how data flows between them.
+For an agent graph: one node per graph node, dotted edges for conditional
+routing, an indicator on any node that calls interrupt(), and the
 checkpointer attached to the compiled graph. Follow the mermaid conventions
 below.>
 
 ## State Schema
 
+<For graph or agent projects: one row per state field. Example rows:>
+
 | Field | Type | Reducer | Purpose |
 | --- | --- | --- | --- |
-| `messages` | `Annotated[list[BaseMessage], add_messages]` | `add_messages` | Conversation history |
-| `clarity_status` | `Literal["clear", "needs_clarification"]` | last-write-wins | Output of Clarity Agent |
-| `confidence_score` | `int` | last-write-wins | Output of Research Agent (0-10) |
-| `validation_result` | `Literal["sufficient", "insufficient"]` | last-write-wins | Output of Validator Agent |
+| `messages` | `Annotated[list[AnyMessage], add_messages]` | `add_messages` | Conversation history |
+| `status` | `Literal["clear", "needs_clarification"]` | last-write-wins | Output of the router's upstream node |
 | `attempts` | `int` | last-write-wins | Bounded retry counter |
-| `research_findings` | `dict[str, Any]` | last-write-wins | Latest research blob |
 
 ## Quickstart
 
 ```bash
 # uv (or use conda + environment.yml, matching the project's chosen tool)
-uv venv --python 3.11 && source .venv/bin/activate
-uv pip install -e ".[dev]"
-cp .env.example .env  # fill in OPENAI_API_KEY at minimum
-myapp
+uv sync                # creates .venv, installs the project + dev group from uv.lock
+cp .env.example .env   # fill in OPENAI_API_KEY at minimum
+uv run myapp
 ```
 
-## Example Conversations
+## Examples
 
-<Two transcripts: one demonstrating the validator loop firing, one
-demonstrating the interrupt-resume flow. Real terminal output, not synthesized.>
+<One or two real runs that show the main behaviors (for an agent: a retry
+or validator loop firing, and an interrupt-resume flow). Real terminal
+output, not synthesized.>
 
 ## Configuration
 
@@ -90,8 +95,8 @@ demonstrating the interrupt-resume flow. Real terminal output, not synthesized.>
 ## Testing
 
 ```bash
-pytest           # unit + integration
-pytest -m eval   # LLM-as-judge eval (optional, slower)
+uv run pytest           # unit + integration
+uv run pytest -m eval   # LLM-as-judge eval (optional, slower)
 ```
 
 ## Project Layout
@@ -101,9 +106,9 @@ pytest -m eval   # LLM-as-judge eval (optional, slower)
 ## Agentic Development Stack
 
 <One paragraph + a small table listing each project-local subagent and skill
-(e.g. under `.opencode/`, `.claude/`, or `.cursor/`), with its purpose and
-where it was invoked during development. This is the section that signals
-tooling fluency.>
+(e.g. under `.agents/skills/`, `.claude/`, `.cursor/`, `.codex/`, or `.opencode/`),
+with its purpose and where it was invoked during development, so
+contributors can reuse the same tooling.>
 
 ## Assumptions
 
@@ -112,13 +117,13 @@ follows the format defined below.>
 
 ## Additional Capabilities
 
-<Bullet list of items implemented beyond the core requirements, each with a file pointer
+<Bullet list of items implemented beyond the core scope, each with a file pointer
 and one-line evidence of what's actually in the repo.>
 
 ## License
 
 MIT (or whichever the user chose).
-```
+````
 
 ## Mermaid Conventions
 
