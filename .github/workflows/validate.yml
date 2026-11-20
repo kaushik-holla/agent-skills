@@ -1,0 +1,25 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Validate skills, agents, links, and scripts
+        run: uv run scripts/validate.py
+      - name: Lint Python helpers
+        run: uvx ruff check . && uvx ruff format --check .
+      - name: Smoke-test the installer
+        run: |
+          python3 scripts/install.py --target claude --target codex --target opencode \
+            --scope project --project-dir "$RUNNER_TEMP/install-test"
+          python3 -c "import tomllib, pathlib; [tomllib.loads(p.read_text()) for p in pathlib.Path('$RUNNER_TEMP/install-test/.codex/agents').glob('*.toml')]"
