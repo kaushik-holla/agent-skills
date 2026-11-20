@@ -1,0 +1,15 @@
+{
+  "name": "kaushik-holla",
+  "description": "Kaushik Holla's agent skills and subagents for AI/ML engineering.",
+  "owner": {
+    "name": "Kaushik Holla",
+    "url": "https://github.com/kaushik-holla"
+  },
+  "plugins": [
+    {
+      "name": "agent-skills",
+      "source": "./",
+      "description": "10 skills and 5 subagents for agentic Python, LangGraph, LLM evals, RAG, MCP, observability, ML reproducibility, data quality, and PR workflow."
+    }
+  ]
+}

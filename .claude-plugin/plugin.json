@@ -1,0 +1,14 @@
+{
+  "name": "agent-skills",
+  "displayName": "Agent Skills for AI/ML Engineering",
+  "version": "2.0.0",
+  "description": "Production-grade skills and subagents for agentic Python, LangGraph, LLM evals, RAG, MCP servers, observability, ML reproducibility, data quality, and PR workflow.",
+  "author": {
+    "name": "Kaushik Holla",
+    "url": "https://github.com/kaushik-holla"
+  },
+  "homepage": "https://github.com/kaushik-holla/agent-skills",
+  "repository": "https://github.com/kaushik-holla/agent-skills",
+  "license": "MIT",
+  "keywords": ["langgraph", "llm-evals", "rag", "mcp", "observability", "mlops", "data-quality", "python"]
+}
