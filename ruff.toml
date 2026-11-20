@@ -1,0 +1,14 @@
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "RUF", "SIM", "S"]
+ignore = [
+  "E501", # ruff format owns line length; remaining long lines are single Markdown-row f-strings
+  "S311", # `random` is used for bootstrapping and simulation, never for security
+  "S603", # subprocess without shell: helper scripts call git/bash with fixed argv
+  "S607", # partial executable path: `git`, `bash`, `nvidia-smi` resolved from PATH on purpose
+]
+
+[lint.per-file-ignores]
+"**/assets/test_*.py" = ["S101"]
