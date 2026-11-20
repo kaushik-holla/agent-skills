@@ -8,6 +8,13 @@
 # Environment
 .env
 .env.local
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
 
 # Logs
 *.log
