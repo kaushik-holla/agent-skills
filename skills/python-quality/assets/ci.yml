@@ -1,0 +1,42 @@
+# .github/workflows/ci.yml template for the python-quality skill.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs uv and the Python version from .python-version; caches the uv store.
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Install (fails if uv.lock is stale)
+        run: uv sync --locked
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (format check)
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy
+
+      - name: Pytest
+        run: uv run pytest -q --cov
+        env:
+          # No real keys in CI; tests must mock or be marked live_llm and skipped.
+          OPENAI_API_KEY: dummy
+
+      - name: Dependency audit
+        run: uvx pip-audit

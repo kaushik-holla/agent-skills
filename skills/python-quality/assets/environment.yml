@@ -1,0 +1,11 @@
+# environment.yml template (conda + pip option of the python-quality skill).
+# Conda owns the interpreter and binary stack; pip installs the project from pyproject.toml.
+name: myapp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip>=25.1        # needed for `pip install --group dev` (PEP 735)
+  # Add binary-heavy packages here when you need conda's builds, e.g.:
+  # - pytorch-gpu
+  # - gdal
