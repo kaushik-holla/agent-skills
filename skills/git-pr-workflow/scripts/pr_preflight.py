@@ -31,11 +31,27 @@ LARGE_FILE_BYTES = 1_000_000
 GENERATED = re.compile(r"(\.lock$|lock\.json$|\.min\.(js|css)$|^dist/|^build/|_pb2\.py$|\.snap$)")
 SECRETS = [
     ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
+    ("AWS access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("Databricks token", re.compile(r"\bdapi[A-Za-z0-9]{32,}(?:-\d)?\b")),
+    (
+        "GitHub token",
+        re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b"),
+    ),
     ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
-    ("LLM API key", re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}")),
-    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    (
+        "LLM API key (OpenAI/Claude/OpenRouter)",
+        re.compile(
+            r"\bsk-(?:ant-(?:api\d{2}-|oat\d{2}-)?|proj-|svcacct-|or-v1-)?[A-Za-z0-9_-]{20,}"
+        ),
+    ),
+    ("Google/Gemini API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("Hugging Face token", re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")),
+    ("Groq API key", re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b")),
+    ("xAI API key", re.compile(r"\bxai-[A-Za-z0-9]{20,}\b")),
+    ("Perplexity API key", re.compile(r"\bpplx-[A-Za-z0-9]{20,}\b")),
+    ("Replicate token", re.compile(r"\br8_[A-Za-z0-9]{20,}\b")),
+    ("LangSmith API key", re.compile(r"\blsv2_(?:pt|sk)_[0-9a-f]{32}_[0-9a-f]{10}\b")),
+    ("npm/PyPI token", re.compile(r"\b(?:npm_[A-Za-z0-9]{36}|pypi-AgEI[A-Za-z0-9_-]{20,})\b")),
     (
         "hardcoded credential",
         re.compile(
